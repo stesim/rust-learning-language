@@ -31,6 +31,12 @@ pub enum Token {
     EOF,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SourceLocation {
+    pub line: usize,
+    pub column: usize,
+}
+
 pub fn lex(input: &str) -> Vec<Node> {
     Lexer::new(input).tokenize()
 }
@@ -39,12 +45,6 @@ pub struct Lexer {
     input: Vec<char>,
     pos: usize,
     location: SourceLocation,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SourceLocation {
-    pub line: usize,
-    pub column: usize,
 }
 
 impl Lexer {
