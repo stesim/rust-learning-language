@@ -1,15 +1,20 @@
-use std::fs;
+use std::{env, fs};
 
-use rust_learning_language::{lexer, parser};
+use rust_learning_language::{interpreter::Interpreter, repl};
 
 fn main() {
-    let source = fs::read_to_string("example.rll").expect("Failed to read code file.");
+    let args: Vec<String> = env::args().skip(1).collect();
+    match &args[..] {
+        [] => repl::execute().unwrap(),
+        [path] => run_file(path),
+        _ => println!("Expected 0 or 1 arguments, got {}", args.len()),
+    }
+}
 
-    let tokens = lexer::lex(&source);
-    println!("Tokens {:#?}", tokens);
-
-    parser::parse(tokens)
-        .inspect(|ast| println!("{:#?}", ast))
-        .inspect_err(|err| println!("{}", err))
-        .ok();
+fn run_file(path: &str) {
+    // NOTE: the function uses the REPL implementation to evaluate the given file to avoid
+    //       duplicating the lexing, parsing, interpreting and error handling steps
+    let source = fs::read_to_string(path).expect("Failed to read code file.");
+    let mut interpreter = Interpreter::new();
+    repl::evaluate_input(&mut interpreter, &source).unwrap();
 }

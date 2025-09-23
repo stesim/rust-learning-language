@@ -1,8 +1,6 @@
 use std::fmt;
 
-use crate::lexer::SourceLocation;
-
-use super::lexer::{Node, Token};
+use crate::lexer::{Node, Token, SourceLocation};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AST(pub Vec<Stmt>);
@@ -27,12 +25,23 @@ pub enum Expr {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BinOp {
     Add,
     Sub,
     Mul,
     Div,
+}
+
+impl fmt::Display for BinOp {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            BinOp::Add => write!(f, "+"),
+            BinOp::Sub => write!(f, "-"),
+            BinOp::Mul => write!(f, "*"),
+            BinOp::Div => write!(f, "/"),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
