@@ -15,6 +15,8 @@ impl Node {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     Let,
+    Func,
+    Return,
     Ident(String),
     Number(i64),
     Plus,
@@ -35,6 +37,8 @@ impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let string = match self {
             Token::Let => "let",
+            Token::Func => "func",
+            Token::Return => "return",
             Token::Ident(name) => return write!(f, "'{name}'"),
             Token::Number(value) => return write!(f, "'{value}'"),
             Token::Plus => "+",
@@ -154,6 +158,8 @@ impl Lexer {
         let (location, ident) = self.collect_string_while(|ch| ch.is_alphanumeric() || ch == '_');
         let token = match ident.as_str() {
             "let" => Token::Let,
+            "func" => Token::Func,
+            "return" => Token::Return,
             _ => Token::Ident(ident),
         };
         Node::new(token, location)

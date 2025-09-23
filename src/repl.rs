@@ -20,11 +20,8 @@ pub fn execute() -> Result<(), io::Error> {
             input.push(';');
         }
 
-        match evaluate_input(&mut interpreter, &input) {
-            Ok(Value::Unit) => {}
-            Ok(value) => println!("{value}"),
-            Err(err) => println!("ERROR: {err}"),
-        }
+        let result = evaluate_input(&mut interpreter, &input);
+        display_result(&result);
     }
 
     Ok(())
@@ -35,6 +32,14 @@ pub fn evaluate_input(interpreter: &mut Interpreter, input: &str) -> Result<Valu
     let ast = parse(tokens).map_err(|e| e.to_string())?;
 
     interpreter.eval(ast).map_err(|e| e.to_string())
+}
+
+pub fn display_result(result: &Result<Value, String>) {
+    match result {
+        Ok(Value::Unit) => {}
+        Ok(value) => println!("{value}"),
+        Err(err) => println!("ERROR: {err}"),
+    }
 }
 
 pub fn prompt_input() -> Result<String, io::Error> {

@@ -16,5 +16,8 @@ fn run_file(path: &str) {
     //       duplicating the lexing, parsing, interpreting and error handling steps
     let source = fs::read_to_string(path).expect("Failed to read code file.");
     let mut interpreter = Interpreter::new();
-    repl::evaluate_input(&mut interpreter, &source).unwrap();
+    match repl::evaluate_input(&mut interpreter, &source) {
+        Err(err) => println!("ERROR: {err}"),
+        _ => {}
+    };
 }

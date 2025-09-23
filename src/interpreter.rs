@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt};
+use std::{collections::HashMap, fmt, rc::Rc};
 
 use thiserror::Error;
 
@@ -8,6 +8,13 @@ use crate::parser::{AST, BinOp, Expr, Stmt};
 pub enum Value {
     Unit,
     Number(i64),
+    Function(Rc<FuncDef>),
+}
+
+#[derive(Debug)]
+pub struct FuncDef {
+    pub params: Vec<String>,
+    pub body: Stmt,
 }
 
 impl fmt::Display for Value {
@@ -15,6 +22,17 @@ impl fmt::Display for Value {
         match self {
             Value::Unit => write!(f, "()"),
             Value::Number(value) => write!(f, "{value}"),
+            Value::Function(def) => {
+                write!(f, "func(")?;
+                for (i, name) in def.params.iter().enumerate() {
+                    if i == 0 {
+                        write!(f, "{name}")?;
+                    } else {
+                        write!(f, ", {name}")?;
+                    }
+                }
+                write!(f, ")")
+            }
         }
     }
 }
@@ -31,16 +49,39 @@ pub enum Error {
         op: BinOp,
         right: Value,
     },
+    #[error("Symbol is not a function: {name}")]
+    NotAFunction { name: String },
+    #[error("Invalid argument count; expected {0}, got {1}")]
+    InvalidArgumentCount(usize, usize),
+}
+
+#[derive(Debug)]
+pub struct EvaluationScope {
+    symbols: HashMap<String, Value>,
+}
+
+impl EvaluationScope {
+    pub fn new() -> Self {
+        Self {
+            symbols: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum ControlFlow {
+    Default(Value),
+    Return(Value),
 }
 
 pub struct Interpreter {
-    symbols: HashMap<String, Value>,
+    scopes: Vec<EvaluationScope>,
 }
 
 impl Interpreter {
     pub fn new() -> Self {
         Self {
-            symbols: HashMap::new(),
+            scopes: vec![EvaluationScope::new()],
         }
     }
 
@@ -51,30 +92,62 @@ impl Interpreter {
             self.eval_stmt(stmt)?;
         }
         match ast.0.last() {
-            Some(stmt) => self.eval_stmt(stmt),
+            Some(stmt) => match self.eval_stmt(stmt)? {
+                ControlFlow::Default(value) => Ok(value),
+                ControlFlow::Return(value) => Ok(value),
+            },
             None => Ok(Value::Unit),
         }
     }
 
     /// Evaluates the given statement and returns its value if it is an expression statement or a
     /// unit value otherwise.
-    pub fn eval_stmt(&mut self, stmt: &Stmt) -> Result<Value, Error> {
+    pub fn eval_stmt(&mut self, stmt: &Stmt) -> Result<ControlFlow, Error> {
         match stmt {
             Stmt::Block(sub_statments) => {
                 for sub_stmt in sub_statments {
-                    self.eval_stmt(sub_stmt)?;
+                    let result = self.eval_stmt(sub_stmt)?;
+                    match result {
+                        ControlFlow::Default(_) => {}
+                        ControlFlow::Return(_) => return Ok(result),
+                    }
                 }
-                Ok(Value::Unit)
+                Ok(ControlFlow::Default(Value::Unit))
             }
-            Stmt::Expr(expr) => self.eval_expr(expr),
-            Stmt::NoOp => Ok(Value::Unit),
+            Stmt::Expr(expr) => self.eval_expr(expr).map(ControlFlow::Default),
+            Stmt::NoOp => Ok(ControlFlow::Default(Value::Unit)),
             Stmt::VarDecl { name, value } => {
-                if self.symbols.contains_key(name) {
-                    return Err(Error::SymbolExists(name.clone()));
+                if !self.has_local_symbol(name) {
+                    let value = self.eval_expr(value)?;
+                    self.add_symbol(name.clone(), value);
+                    Ok(ControlFlow::Default(Value::Unit))
+                } else {
+                    Err(Error::SymbolExists(name.clone()))
                 }
+            }
+            Stmt::Assign { name, value } => {
                 let value = self.eval_expr(value)?;
-                self.symbols.insert(name.clone(), value);
-                Ok(Value::Unit)
+                self.assign_symbol(name, value)?;
+                Ok(ControlFlow::Default(Value::Unit))
+            }
+            Stmt::FuncDef { name, params, body } => {
+                if !self.has_local_symbol(name) {
+                    let value = Value::Function(Rc::new(FuncDef {
+                        params: params.clone(),
+                        body: *body.clone(),
+                    }));
+                    self.add_symbol(name.clone(), value);
+                    Ok(ControlFlow::Default(Value::Unit))
+                } else {
+                    Err(Error::SymbolExists(name.clone()))
+                }
+            }
+            Stmt::Return(expr) => {
+                let value = match expr {
+                    Some(expr) => self.eval_expr(expr)?,
+                    None => Value::Unit,
+                };
+                Ok(ControlFlow::Return(value))
             }
         }
     }
@@ -82,21 +155,63 @@ impl Interpreter {
     pub fn eval_expr(&mut self, expr: &Expr) -> Result<Value, Error> {
         match expr {
             Expr::BinaryOp { left, op, right } => self.eval_binary_op(left, op, right),
-            Expr::FunCall(name, args) => {
-                // FIXME: handle function calls properly
-                if name == "print" {
-                    self.eval_print(args).map(|_| Value::Unit)
-                } else {
-                    Err(Error::UnknownSymbol(name.clone()))
-                }
-            }
+            Expr::FunCall(name, args) => self.eval_func(&name, args),
             Expr::Number(value) => Ok(Value::Number(*value)),
             Expr::Variable(name) => self
-                .symbols
-                .get(name)
+                .get_symbol(name)
                 .cloned()
                 .ok_or_else(|| Error::UnknownSymbol(name.clone())),
         }
+    }
+
+    pub fn eval_func(&mut self, name: &str, args: &Vec<Expr>) -> Result<Value, Error> {
+        match self.get_symbol(name) {
+            Some(Value::Function(def)) => {
+                let def = def.clone();
+                self.eval_user_func(&def.params, args, &def.body)
+            }
+            Some(_) => Err(Error::NotAFunction {
+                name: name.to_owned(),
+            }),
+            None => self.eval_builtin_func(&name[..], args),
+        }
+    }
+
+    pub fn eval_user_func(
+        &mut self,
+        params: &Vec<String>,
+        args: &Vec<Expr>,
+        body: &Stmt,
+    ) -> Result<Value, Error> {
+        if args.len() != params.len() {
+            return Err(Error::InvalidArgumentCount(params.len(), args.len()));
+        }
+
+        let args = self.eval_func_args(args)?;
+        self.push_scope();
+        for (name, value) in params.iter().zip(args.iter()) {
+            self.add_symbol(name.clone(), value.clone());
+        }
+
+        let result = match self.eval_stmt(body)? {
+            ControlFlow::Default(value) => Ok(value),
+            ControlFlow::Return(value) => Ok(value),
+        };
+
+        self.pop_scope();
+
+        result
+    }
+
+    pub fn eval_builtin_func(&mut self, name: &str, args: &Vec<Expr>) -> Result<Value, Error> {
+        match name {
+            "print" => self.eval_print(args).map(|_| Value::Unit),
+            _ => Err(Error::UnknownSymbol(name.to_owned())),
+        }
+    }
+
+    pub fn eval_func_args(&mut self, args: &Vec<Expr>) -> Result<Vec<Value>, Error> {
+        args.iter().map(|expr| self.eval_expr(expr)).collect()
     }
 
     pub fn eval_binary_op(
@@ -128,15 +243,56 @@ impl Interpreter {
     pub fn eval_print(&mut self, args: &Vec<Expr>) -> Result<(), Error> {
         for (i, arg) in args.iter().enumerate() {
             let value = self.eval_expr(arg)?;
-            if i > 0 {
-                print!(", ")
-            }
-            match value {
-                Value::Unit => print!("()"),
-                Value::Number(num) => print!("{}", num),
+            if i == 0 {
+                print!("{value}");
+            } else {
+                print!(", {value}");
             }
         }
         print!("\n");
         Ok(())
+    }
+
+    pub fn has_local_symbol(&self, name: &str) -> bool {
+        self.current_scope().symbols.contains_key(name)
+    }
+
+    pub fn get_symbol(&self, name: &str) -> Option<&Value> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(value) = scope.symbols.get(name) {
+                return Some(value);
+            }
+        }
+        None
+    }
+
+    pub fn add_symbol(&mut self, name: String, value: Value) {
+        self.current_scope_mut().symbols.insert(name, value);
+    }
+
+    pub fn assign_symbol(&mut self, name: &str, value: Value) -> Result<(), Error> {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(stored) = scope.symbols.get_mut(name) {
+                *stored = value;
+                return Ok(());
+            }
+        }
+        Err(Error::UnknownSymbol(name.to_owned()))
+    }
+
+    pub fn push_scope(&mut self) {
+        self.scopes.push(EvaluationScope::new());
+    }
+
+    pub fn pop_scope(&mut self) {
+        self.scopes.pop();
+    }
+
+    pub fn current_scope(&self) -> &EvaluationScope {
+        self.scopes.last().unwrap()
+    }
+
+    pub fn current_scope_mut(&mut self) -> &mut EvaluationScope {
+        self.scopes.last_mut().unwrap()
     }
 }

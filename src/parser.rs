@@ -9,7 +9,20 @@ pub struct AST(pub Vec<Stmt>);
 pub enum Stmt {
     NoOp,
     Block(Vec<Stmt>),
-    VarDecl { name: String, value: Expr },
+    VarDecl {
+        name: String,
+        value: Expr,
+    },
+    Assign {
+        name: String,
+        value: Expr,
+    },
+    FuncDef {
+        name: String,
+        params: Vec<String>,
+        body: Box<Stmt>,
+    },
+    Return(Option<Expr>),
     Expr(Expr),
 }
 
@@ -107,6 +120,14 @@ impl Parser {
         self.peek().ok_or(ParseError::UnexpectedEndOfFile(err))
     }
 
+    pub fn peek_next(&self) -> Option<&Node> {
+        self.tokens.get(self.pos + 1)
+    }
+
+    pub fn peek_next_or_error(&self, err: &'static str) -> Result<&Node, ParseError> {
+        self.peek_next().ok_or(ParseError::UnexpectedEndOfFile(err))
+    }
+
     pub fn advance(&mut self) -> Result<Node, ParseError> {
         self.advance_or_error("token")
     }
@@ -146,7 +167,8 @@ impl Parser {
     }
 
     pub fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
-        let node = self.peek_or_error("expression, 'let', ';' or '{'")?;
+        let node =
+            self.peek_or_error("identifier, expression, 'let', 'func', 'return', ';' or '{'")?;
 
         match node.token {
             Token::Semicolon => {
@@ -155,6 +177,11 @@ impl Parser {
             }
             Token::LBrace => self.parse_block(),
             Token::Let => self.parse_var_decl(),
+            Token::Func => self.parse_func_def(),
+            Token::Return => self.parse_return(),
+            Token::Ident(_) if self.peek_next().is_some_and(|n| n.token == Token::Eq) => {
+                self.parse_assign()
+            }
             _ => {
                 let expr = self.parse_expr()?;
                 self.expect(&Token::Semicolon)?;
@@ -180,6 +207,13 @@ impl Parser {
         }
         self.expect(&Token::RBrace)?;
         Ok(Stmt::Block(statements))
+    }
+
+    pub fn parse_assign(&mut self) -> Result<Stmt, ParseError> {
+        let name = self.parse_identifier()?;
+        self.expect(&Token::Eq)?;
+        let value = self.parse_expr()?;
+        Ok(Stmt::Assign { name, value })
     }
 
     pub fn parse_expr(&mut self) -> Result<Expr, ParseError> {
@@ -263,6 +297,78 @@ impl Parser {
     pub fn parse_var_decl(&mut self) -> Result<Stmt, ParseError> {
         self.expect(&Token::Let)?;
 
+        let name = self.parse_identifier()?;
+
+        self.expect(&Token::Eq)?;
+
+        let value = self.parse_expr()?;
+
+        self.expect(&Token::Semicolon)?;
+
+        Ok(Stmt::VarDecl { name, value })
+    }
+
+    pub fn parse_func_def(&mut self) -> Result<Stmt, ParseError> {
+        self.expect(&Token::Func)?;
+
+        let name = self.parse_identifier()?;
+
+        self.expect(&Token::LParen)?;
+
+        let params = self.parse_parameter_list()?;
+
+        self.expect(&Token::RParen)?;
+
+        let body = self.parse_func_body()?;
+
+        Ok(Stmt::FuncDef {
+            name,
+            params,
+            body: Box::new(body),
+        })
+    }
+
+    pub fn parse_func_body(&mut self) -> Result<Stmt, ParseError> {
+        let next = &self.peek_or_error("expression or '{'")?.token;
+        if next == &Token::LBrace {
+            self.parse_block()
+        } else {
+            let expr = self.parse_expr()?;
+            self.expect(&Token::Semicolon)?;
+            Ok(Stmt::Expr(expr))
+        }
+    }
+
+    pub fn parse_return(&mut self) -> Result<Stmt, ParseError> {
+        self.expect(&Token::Return)?;
+        if self.peek_or_error("expression or ';'")?.token == Token::Semicolon {
+            Ok(Stmt::Return(None))
+        } else {
+            self.parse_expr().map(|expr| Stmt::Return(Some(expr)))
+        }
+    }
+
+    pub fn parse_parameter_list(&mut self) -> Result<Vec<String>, ParseError> {
+        let mut params = Vec::new();
+
+        let node = self.peek_or_error("identifier or ')'")?;
+        if node.token != Token::RParen {
+            loop {
+                let param = self.parse_identifier()?;
+                params.push(param);
+                let node = self.peek_or_error("',' or ')'")?;
+                if node.token == Token::Comma {
+                    self.advance().unwrap();
+                } else {
+                    break;
+                }
+            }
+        }
+
+        Ok(params)
+    }
+
+    pub fn parse_identifier(&mut self) -> Result<String, ParseError> {
         let ident_node = self.advance_or_error("identifier")?;
         let Token::Ident(ident) = ident_node.token else {
             return Err(ParseError::UnexpectedToken(
@@ -271,17 +377,7 @@ impl Parser {
                 ident_node.location,
             ));
         };
-
-        self.expect(&Token::Eq)?;
-
-        let expr = self.parse_expr()?;
-
-        self.expect(&Token::Semicolon)?;
-
-        Ok(Stmt::VarDecl {
-            name: ident,
-            value: expr,
-        })
+        Ok(ident)
     }
 
     pub fn parse_argument_list(&mut self) -> Result<Vec<Expr>, ParseError> {
