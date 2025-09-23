@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt};
 
 use thiserror::Error;
 
@@ -8,6 +8,15 @@ use crate::parser::{AST, BinOp, Expr, Stmt};
 pub enum Value {
     Unit,
     Number(i64),
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Value::Unit => write!(f, "()"),
+            Value::Number(value) => write!(f, "{value}"),
+        }
+    }
 }
 
 #[derive(Error, Debug)]
@@ -35,30 +44,37 @@ impl Interpreter {
         }
     }
 
-    pub fn eval(&mut self, ast: AST) -> Result<(), Error> {
-        for stmt in &ast.0 {
+    /// Evaluates the given syntax tree and returns the value of the last statement (see
+    /// `eval_stmt()`).
+    pub fn eval(&mut self, ast: AST) -> Result<Value, Error> {
+        for stmt in &ast.0[..ast.0.len() - 1] {
             self.eval_stmt(stmt)?;
         }
-        Ok(())
+        match ast.0.last() {
+            Some(stmt) => self.eval_stmt(stmt),
+            None => Ok(Value::Unit),
+        }
     }
 
-    pub fn eval_stmt(&mut self, stmt: &Stmt) -> Result<(), Error> {
+    /// Evaluates the given statement and returns its value if it is an expression statement or a
+    /// unit value otherwise.
+    pub fn eval_stmt(&mut self, stmt: &Stmt) -> Result<Value, Error> {
         match stmt {
             Stmt::Block(sub_statments) => {
                 for sub_stmt in sub_statments {
                     self.eval_stmt(sub_stmt)?;
                 }
-                Ok(())
+                Ok(Value::Unit)
             }
-            Stmt::Expr(expr) => self.eval_expr(expr).map(drop),
-            Stmt::NoOp => Ok(()),
+            Stmt::Expr(expr) => self.eval_expr(expr),
+            Stmt::NoOp => Ok(Value::Unit),
             Stmt::VarDecl { name, value } => {
                 if self.symbols.contains_key(name) {
                     return Err(Error::SymbolExists(name.clone()));
                 }
                 let value = self.eval_expr(value)?;
                 self.symbols.insert(name.clone(), value);
-                Ok(())
+                Ok(Value::Unit)
             }
         }
     }

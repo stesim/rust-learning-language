@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::lexer::{Node, Token, SourceLocation};
+use crate::lexer::{Node, SourceLocation, Token};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AST(pub Vec<Stmt>);
@@ -60,19 +60,19 @@ impl fmt::Display for ParseError {
             ParseError::ExpectedToken(expected, got, loc) => {
                 write!(
                     f,
-                    "Parse error at line {}, column {}:\n\tExpected {:?}, got {:?}.",
+                    "Parse error at line {}, column {}:\n\tExpected {}, got {}.",
                     loc.line, loc.column, expected, got
                 )
             }
             ParseError::UnexpectedToken(expected, got, loc) => {
                 write!(
                     f,
-                    "Parse error at line {}, column {}:\n\tExpected {}, got {:?}.",
+                    "Parse error at line {}, column {}:\n\tExpected {}, got {}.",
                     loc.line, loc.column, expected, got
                 )
             }
             ParseError::MissingToken(expected) => {
-                write!(f, "Parse error:\n\tExpected {:?}, got nothing.", expected)
+                write!(f, "Parse error:\n\tExpected {}, got nothing.", expected)
             }
             ParseError::UnexpectedEndOfFile(expected) => {
                 write!(f, "Parse error:\n\tExpected {}, got end of file.", expected)

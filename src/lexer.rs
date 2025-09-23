@@ -1,4 +1,4 @@
-use std::char;
+use std::{char, fmt};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
@@ -29,6 +29,29 @@ pub enum Token {
     RBrace,
     Semicolon,
     EOF,
+}
+
+impl fmt::Display for Token {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let string = match self {
+            Token::Let => "let",
+            Token::Ident(name) => return write!(f, "'{name}'"),
+            Token::Number(value) => return write!(f, "'{value}'"),
+            Token::Plus => "+",
+            Token::Minus => "-",
+            Token::Star => "*",
+            Token::Slash => "/",
+            Token::Eq => "=",
+            Token::LParen => "(",
+            Token::RParen => ")",
+            Token::Comma => ",",
+            Token::LBrace => "{",
+            Token::RBrace => "}",
+            Token::Semicolon => ";",
+            Token::EOF => return write!(f, "EOF"),
+        };
+        write!(f, "'{string}'")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
