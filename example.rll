@@ -10,4 +10,10 @@ func c2(a, b) {
     return a2 + b2;
 }
 
-print(c2(3, 4));
+func calc(a, b) {
+    print("a =", a);
+    print("b =", b);
+    print("a² + b² =", c2(a, b));
+}
+
+calc(3, 4);

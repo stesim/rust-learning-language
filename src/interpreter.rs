@@ -8,6 +8,7 @@ use crate::parser::{AST, BinOp, Expr, Stmt};
 pub enum Value {
     Unit,
     Number(i64),
+    String(String),
     Function(Rc<FuncDef>),
 }
 
@@ -22,6 +23,7 @@ impl fmt::Display for Value {
         match self {
             Value::Unit => write!(f, "()"),
             Value::Number(value) => write!(f, "{value}"),
+            Value::String(content) => write!(f, "\"{content}\""),
             Value::Function(def) => {
                 write!(f, "func(")?;
                 for (i, name) in def.params.iter().enumerate() {
@@ -157,6 +159,7 @@ impl Interpreter {
             Expr::BinaryOp { left, op, right } => self.eval_binary_op(left, op, right),
             Expr::FunCall(name, args) => self.eval_func(&name, args),
             Expr::Number(value) => Ok(Value::Number(*value)),
+            Expr::String(content) => Ok(Value::String(content.clone())),
             Expr::Variable(name) => self
                 .get_symbol(name)
                 .cloned()
@@ -223,30 +226,36 @@ impl Interpreter {
         let left = self.eval_expr(left)?;
         let right = self.eval_expr(right)?;
 
-        if let (Value::Number(lhs), Value::Number(rhs)) = (&left, &right) {
-            let result = match op {
-                BinOp::Add => lhs + rhs,
-                BinOp::Sub => lhs - rhs,
-                BinOp::Mul => lhs * rhs,
-                BinOp::Div => lhs / rhs,
-            };
-            Ok(Value::Number(result))
-        } else {
-            Err(Error::UnsupportedBinaryOp {
+        match (&left, &right) {
+            (Value::Number(lhs), Value::Number(rhs)) => {
+                let result = match op {
+                    BinOp::Add => lhs + rhs,
+                    BinOp::Sub => lhs - rhs,
+                    BinOp::Mul => lhs * rhs,
+                    BinOp::Div => lhs / rhs,
+                };
+                Ok(Value::Number(result))
+            }
+            (Value::String(lhs), Value::String(rhs)) if op == &BinOp::Add => {
+                Ok(Value::String(format!("{lhs}{rhs}")))
+            }
+            _ => Err(Error::UnsupportedBinaryOp {
                 left,
                 op: *op,
                 right,
-            })
+            }),
         }
     }
 
     pub fn eval_print(&mut self, args: &Vec<Expr>) -> Result<(), Error> {
         for (i, arg) in args.iter().enumerate() {
             let value = self.eval_expr(arg)?;
-            if i == 0 {
-                print!("{value}");
-            } else {
-                print!(", {value}");
+            if i > 0 {
+                print!(" ");
+            }
+            match value {
+                Value::String(content) => print!("{content}"),
+                _ => print!("{value}"),
             }
         }
         print!("\n");

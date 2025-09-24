@@ -29,6 +29,7 @@ pub enum Stmt {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Number(i64),
+    String(String),
     Variable(String),
     FunCall(String, Vec<Expr>),
     BinaryOp {
@@ -272,6 +273,7 @@ impl Parser {
         let node = self.advance_or_error("number, identifier or '('")?;
         match node.token {
             Token::Number(value) => Ok(Expr::Number(value)),
+            Token::String(content) => Ok(Expr::String(content)),
             Token::Ident(ident) => {
                 let is_function_call = self.peek().is_some_and(|n| n.token == Token::LParen);
                 if is_function_call {

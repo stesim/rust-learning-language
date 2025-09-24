@@ -19,6 +19,7 @@ pub enum Token {
     Return,
     Ident(String),
     Number(i64),
+    String(String),
     Plus,
     Minus,
     Star,
@@ -41,6 +42,7 @@ impl fmt::Display for Token {
             Token::Return => "return",
             Token::Ident(name) => return write!(f, "'{name}'"),
             Token::Number(value) => return write!(f, "'{value}'"),
+            Token::String(content) => return write!(f, "\"{content}\""),
             Token::Plus => "+",
             Token::Minus => "-",
             Token::Star => "*",
@@ -107,6 +109,8 @@ impl Lexer {
             self.lex_keyword_or_identifier()
         } else if ch.is_ascii_digit() {
             self.lex_number()
+        } else if ch == '"' {
+            self.lex_string()
         } else {
             self.lex_special_characters(ch)
         }
@@ -135,19 +139,14 @@ impl Lexer {
         }
     }
 
-    pub fn collect_string_while(
-        &mut self,
-        pred: impl Fn(char) -> bool,
-    ) -> (SourceLocation, String) {
-        let start_location = self.location;
-
+    pub fn collect_string_while(&mut self, pred: impl Fn(char) -> bool) -> String {
         let start_pos = self.pos;
         self.advance_while(pred);
         let end_pos = self.pos;
 
         let string = self.input[start_pos..end_pos].iter().collect();
 
-        (start_location, string)
+        string
     }
 
     pub fn skip_whitespace(&mut self) {
@@ -155,7 +154,8 @@ impl Lexer {
     }
 
     pub fn lex_keyword_or_identifier(&mut self) -> Node {
-        let (location, ident) = self.collect_string_while(|ch| ch.is_alphanumeric() || ch == '_');
+        let location = self.location;
+        let ident = self.collect_string_while(|ch| ch.is_alphanumeric() || ch == '_');
         let token = match ident.as_str() {
             "let" => Token::Let,
             "func" => Token::Func,
@@ -166,9 +166,22 @@ impl Lexer {
     }
 
     pub fn lex_number(&mut self) -> Node {
-        let (location, literal) = self.collect_string_while(|ch| ch.is_ascii_digit());
+        let location = self.location;
+        let literal = self.collect_string_while(|ch| ch.is_ascii_digit());
         let value = literal.parse().unwrap();
         Node::new(Token::Number(value), location)
+    }
+
+    pub fn lex_string(&mut self) -> Node {
+        let location = self.location;
+        if self.advance() != Some('"') {
+            panic!("Expected '\"'.");
+        }
+        let literal = self.collect_string_while(|ch| ch != '"');
+        if self.advance() != Some('"') {
+            panic!("Expected '\"'.");
+        }
+        Node::new(Token::String(literal), location)
     }
 
     pub fn lex_special_characters(&mut self, ch: char) -> Node {
