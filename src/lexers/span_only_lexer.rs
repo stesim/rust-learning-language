@@ -2,14 +2,16 @@ use std::fmt;
 
 use thiserror::Error;
 
+const MAX_KEYWORD_LENGTH: usize = 6;
+
 #[derive(Debug, Clone, Copy)]
-pub enum Token<'a> {
+pub enum Token {
     Let,
     Func,
     Return,
-    Ident(&'a str),
-    Number(i64),
-    String(&'a str),
+    Ident,
+    Number,
+    String,
     Plus,
     Minus,
     Star,
@@ -24,15 +26,15 @@ pub enum Token<'a> {
     EOF,
 }
 
-impl fmt::Display for Token<'_> {
+impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let string = match self {
             Token::Let => "let",
             Token::Func => "func",
             Token::Return => "return",
-            Token::Ident(name) => return write!(f, "'{name}'"),
-            Token::Number(value) => return write!(f, "'{value}'"),
-            Token::String(content) => return write!(f, "\"{content}\""),
+            Token::Ident => return write!(f, "<identifier>"),
+            Token::Number => return write!(f, "<number>"),
+            Token::String => return write!(f, "<string>"),
             Token::Plus => "+",
             Token::Minus => "-",
             Token::Star => "*",
@@ -113,19 +115,28 @@ pub enum Error {
     UnexpectedEndOfFile { pos: Position },
 }
 
-pub fn lex<'a>(input: &'a str) -> impl Iterator<Item = Result<Spanned<Token<'a>>, Error>> + 'a {
+pub fn lex<I>(input: I) -> impl Iterator<Item = Result<Spanned<Token>, Error>>
+where
+    I: Iterator<Item = char>,
+{
     Lexer::new(input)
 }
 
-pub struct Lexer<'a> {
-    input: &'a str,
+pub struct Lexer<I>
+where
+    I: Iterator<Item = char>,
+{
+    input: std::iter::Peekable<I>,
     position: Position,
 }
 
-impl<'a> Lexer<'a> {
-    pub fn new(input: &'a str) -> Self {
+impl<I> Lexer<I>
+where
+    I: Iterator<Item = char>,
+{
+    pub fn new(input: I) -> Self {
         Self {
-            input,
+            input: input.peekable(),
             position: Position {
                 line: 1,
                 column: 1,
@@ -134,12 +145,8 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn slice_from_span(&self, span: &Span) -> &'a str {
-        &self.input[span.start.offset..span.end.offset]
-    }
-
-    fn peek(&self) -> Option<char> {
-        self.input[self.position.offset..].chars().next()
+    fn peek(&mut self) -> Option<char> {
+        self.input.peek().copied()
     }
 
     fn expect(&mut self, ch: char) -> Result<(), Error> {
@@ -161,16 +168,16 @@ impl<'a> Lexer<'a> {
     }
 
     fn advance(&mut self) -> Option<char> {
-        self.peek().inspect(|ch| {
-            let len = ch.len_utf8();
-            self.position.offset += len;
-            if *ch == '\n' {
-                self.position.line += 1;
-                self.position.column = 1;
-            } else {
-                self.position.column += 1;
-            }
-        })
+        let ch = self.input.next()?;
+        let len = ch.len_utf8();
+        self.position.offset += len;
+        if ch == '\n' {
+            self.position.line += 1;
+            self.position.column = 1;
+        } else {
+            self.position.column += 1;
+        }
+        Some(ch)
     }
 
     fn advance_while(&mut self, pred: impl Fn(char) -> bool) {
@@ -183,7 +190,7 @@ impl<'a> Lexer<'a> {
         self.advance_while(|ch| ch.is_whitespace());
     }
 
-    fn collect_string_while(&mut self, pred: impl Fn(char) -> bool) -> Span {
+    fn span_while(&mut self, pred: impl Fn(char) -> bool) -> Span {
         let start_pos = self.position;
         self.advance_while(pred);
         let end_pos = self.position;
@@ -191,7 +198,7 @@ impl<'a> Lexer<'a> {
         Span::new(start_pos, end_pos)
     }
 
-    fn lex_token(&mut self) -> Result<Spanned<Token<'a>>, Error> {
+    fn lex_token(&mut self) -> Result<Spanned<Token>, Error> {
         self.skip_whitespace();
 
         let Some(ch) = self.peek() else {
@@ -210,39 +217,56 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn lex_keyword_or_identifier(&mut self) -> Spanned<Token<'a>> {
-        let span = self.collect_string_while(|ch| ch.is_alphanumeric() || ch == '_');
-        let string = self.slice_from_span(&span);
-        let token = match string {
-            "let" => Token::Let,
-            "func" => Token::Func,
-            "return" => Token::Return,
-            _ => Token::Ident(string),
-        };
-        Spanned::new(token, span)
-    }
+    fn lex_keyword_or_identifier(&mut self) -> Spanned<Token> {
+        let pred = |ch: char| ch.is_alphanumeric() || ch == '_';
 
-    fn lex_number(&mut self) -> Result<Spanned<Token<'a>>, Error> {
-        let span = self.collect_string_while(|ch| ch.is_ascii_digit());
-        let string = self.slice_from_span(&span);
-        match string.parse() {
-            Ok(value) => Ok(Spanned::new(Token::Number(value), span)),
-            Err(_) => Err(Error::InvalidNumber {
-                span,
-                literal: string.to_owned(),
-            }),
+        let start = self.position;
+
+        let mut len: usize = 0;
+        let mut buf: [char; MAX_KEYWORD_LENGTH] = ['\0'; MAX_KEYWORD_LENGTH];
+        for i in 0..len {
+            if self.peek().is_some_and(pred) {
+                buf[i] = self.advance().unwrap();
+                len += 1;
+            } else {
+                break;
+            }
         }
+
+        while self.peek().is_some_and(&pred) {
+            self.advance();
+            len += 1;
+        }
+
+        let end = self.position;
+
+        let token = if len <= MAX_KEYWORD_LENGTH {
+            match &buf[..len] {
+                ['l', 'e', 't', ..] => Token::Let,
+                ['f', 'u', 'n', 'c', ..] => Token::Func,
+                ['r', 'e', 't', 'u', 'r', 'n', ..] => Token::Return,
+                _ => Token::Ident,
+            }
+        } else {
+            Token::Ident
+        };
+
+        Spanned::from_positions(token, start, end)
     }
 
-    fn lex_string(&mut self) -> Result<Spanned<Token<'a>>, Error> {
-        self.expect('"')?;
-        let span = self.collect_string_while(|ch| ch != '"');
-        self.expect('"')?;
-        let string = self.slice_from_span(&span);
-        Ok(Spanned::new(Token::String(string), span))
+    fn lex_number(&mut self) -> Result<Spanned<Token>, Error> {
+        let span = self.span_while(|ch| ch.is_ascii_digit());
+        Ok(Spanned::new(Token::Number, span))
     }
 
-    fn lex_special_characters(&mut self) -> Result<Spanned<Token<'a>>, Error> {
+    fn lex_string(&mut self) -> Result<Spanned<Token>, Error> {
+        self.expect('"')?;
+        let span = self.span_while(|ch| ch != '"');
+        self.expect('"')?;
+        Ok(Spanned::new(Token::String, span))
+    }
+
+    fn lex_special_characters(&mut self) -> Result<Spanned<Token>, Error> {
         let start = self.position;
 
         let Some(ch) = self.advance() else {
@@ -265,16 +289,17 @@ impl<'a> Lexer<'a> {
             _ => return Err(Error::UnexpectedCharacter { pos: start, ch }),
         };
 
-        self.advance();
-
         let end = self.position;
 
         Ok(Spanned::from_positions(token, start, end))
     }
 }
 
-impl<'a> Iterator for Lexer<'a> {
-    type Item = Result<Spanned<Token<'a>>, Error>;
+impl<I> Iterator for Lexer<I>
+where
+    I: Iterator<Item = char>,
+{
+    type Item = Result<Spanned<Token>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.lex_token() {

@@ -2,8 +2,8 @@ use std::io::{self, Write};
 
 use crate::{
     interpreter::{Interpreter, Value},
-    lexer::lex,
-    parser::parse,
+    lexers::simple_lexer::lex,
+    parsers::simple_parser::parse,
 };
 
 pub fn execute() -> Result<(), io::Error> {

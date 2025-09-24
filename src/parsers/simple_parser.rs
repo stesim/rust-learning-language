@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::lexer::{Node, SourceLocation, Token};
+use crate::lexers::simple_lexer::{Node, SourceLocation, Token};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AST(pub Vec<Stmt>);
@@ -214,6 +214,7 @@ impl Parser {
         let name = self.parse_identifier()?;
         self.expect(&Token::Eq)?;
         let value = self.parse_expr()?;
+        self.expect(&Token::Semicolon)?;
         Ok(Stmt::Assign { name, value })
     }
 

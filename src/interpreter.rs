@@ -2,7 +2,7 @@ use std::{collections::HashMap, fmt, rc::Rc};
 
 use thiserror::Error;
 
-use crate::parser::{AST, BinOp, Expr, Stmt};
+use crate::parsers::simple_parser::{AST, BinOp, Expr, Stmt};
 
 #[derive(Debug, Clone)]
 pub enum Value {
