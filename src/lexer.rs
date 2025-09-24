@@ -207,8 +207,4 @@ impl Lexer {
 
         Node::new(token, location)
     }
-
-    pub fn new_token(&self, kind: Token) -> Node {
-        Node::new(kind, self.location)
-    }
 }
