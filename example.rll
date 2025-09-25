@@ -17,3 +17,9 @@ func calc(a, b) {
 }
 
 calc(3, 4);
+
+func greet(name) {
+    print("Hello, " + name + "!");
+}
+
+greet("world");

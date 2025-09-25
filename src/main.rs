@@ -2,12 +2,21 @@ use std::{env, fs};
 
 use rust_learning_language as rll;
 
-use rll::{interpreter::Interpreter, repl};
-
 fn main() {
+    let eval_type = env::var("RLL_EVAL").unwrap_or("simple".to_string());
+    match &eval_type[..] {
+        "simple" => run(simple_eval()),
+        "no_copy" => run(no_copy_eval()),
+        _ => println!("Unknown eval type."),
+    };
+}
+
+fn run(eval: impl FnMut(&str) -> Result<Option<String>, String>) {
     let args: Vec<String> = env::args().skip(1).collect();
     match &args[..] {
-        [] => repl::execute().unwrap(),
+        [] => {
+            rll::repl::run(eval).unwrap();
+        }
         [path] => {
             if let Ok(test_feature) = env::var("RLL_TEST") {
                 match &test_feature[..] {
@@ -19,22 +28,70 @@ fn main() {
                     }
                 }
             } else {
-                run_file(path);
+                run_file(eval, path);
             }
         }
         _ => println!("Expected 0 or 1 arguments, got {}", args.len()),
     }
 }
 
-fn run_file(path: &str) {
-    // NOTE: the function uses the REPL implementation to evaluate the given file to avoid
-    //       duplicating the lexing, parsing, interpreting and error handling steps
-    let source = fs::read_to_string(path).expect("Failed to read code file.");
-    let mut interpreter = Interpreter::new();
-    match repl::evaluate_input(&mut interpreter, &source) {
-        Err(err) => println!("ERROR: {err}"),
-        _ => {}
+fn simple_eval() -> impl FnMut(&str) -> Result<Option<String>, String> {
+    use rll::{
+        interpreters::simple_interpreter::{Interpreter, Value},
+        lexers::simple_lexer::lex,
+        parsers::simple_parser::parse,
     };
+
+    let mut interpreter = Interpreter::new();
+
+    return move |input: &str| {
+        let tokens = lex(&input);
+        let ast = parse(tokens).map_err(|e| e.to_string())?;
+        match interpreter.eval(ast) {
+            Ok(Value::Unit) => Ok(None),
+            Ok(value) => Ok(Some(value.to_string())),
+            Err(err) => Err(err.to_string()),
+        }
+    };
+}
+
+fn no_copy_eval() -> impl FnMut(&str) -> Result<Option<String>, String> {
+    use rll::{
+        interpreters::no_copy_interpreter::{Interpreter, Value},
+        lexers::no_copy_lexer::lex,
+        parsers::no_copy_parser::parse,
+    };
+
+    let mut interpreter = Interpreter::new();
+
+    return move |input: &str| {
+        // HACK
+        let input: &'static str = Box::leak(input.to_string().into_boxed_str());
+
+        let tokens = lex(input);
+
+        // HACK
+        let ast: &'static Vec<_> = Box::leak(Box::new(
+            parse(tokens)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?,
+        ));
+
+        match interpreter.eval(ast.iter()) {
+            Ok(Value::Unit) => Ok(None),
+            Ok(value) => Ok(Some(value.to_string())),
+            Err(err) => Err(err.to_string()),
+        }
+    };
+}
+
+fn run_file(mut eval: impl FnMut(&str) -> Result<Option<String>, String>, path: &str) {
+    let source = fs::read_to_string(path).expect("Failed to read code file.");
+    match eval(&source) {
+        Ok(None) => {}
+        Ok(Some(value)) => println!("{value}"),
+        Err(err) => println!("ERROR: {err}"),
+    }
 }
 
 fn test_no_copy(path: &str) {

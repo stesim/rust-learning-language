@@ -1,14 +1,6 @@
 use std::io::{self, Write};
 
-use crate::{
-    interpreter::{Interpreter, Value},
-    lexers::simple_lexer::lex,
-    parsers::simple_parser::parse,
-};
-
-pub fn execute() -> Result<(), io::Error> {
-    let mut interpreter = Interpreter::new();
-
+pub fn run(mut eval: impl FnMut(&str) -> Result<Option<String>, String>) -> Result<(), io::Error> {
     loop {
         let mut input = prompt_input()?;
         if input == "exit" {
@@ -20,24 +12,17 @@ pub fn execute() -> Result<(), io::Error> {
             input.push(';');
         }
 
-        let result = evaluate_input(&mut interpreter, &input);
-        display_result(&result);
+        let result = eval(&input);
+        display_result(result);
     }
 
     Ok(())
 }
 
-pub fn evaluate_input(interpreter: &mut Interpreter, input: &str) -> Result<Value, String> {
-    let tokens = lex(&input);
-    let ast = parse(tokens).map_err(|e| e.to_string())?;
-
-    interpreter.eval(ast).map_err(|e| e.to_string())
-}
-
-pub fn display_result(result: &Result<Value, String>) {
+pub fn display_result(result: Result<Option<String>, String>) {
     match result {
-        Ok(Value::Unit) => {}
-        Ok(value) => println!("{value}"),
+        Ok(Some(value)) => println!("{value}"),
+        Ok(None) => {}
         Err(err) => println!("ERROR: {err}"),
     }
 }

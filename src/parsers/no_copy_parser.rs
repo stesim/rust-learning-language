@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::lexers::no_copy_lexer::{Error as LexError, Position, Span, Token, TokenKind};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Stmt<'a> {
     NoOp,
     Block(Vec<Stmt<'a>>),
@@ -25,7 +25,7 @@ pub enum Stmt<'a> {
     Expr(Expr<'a>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Expr<'a> {
     Number(i64),
     String(&'a str),
