@@ -2,6 +2,8 @@
 name = "rust_learning_language"
 version = "0.1.0"
 edition = "2024"
+description = "Toy language interpreter as an exercise in development with Rust."
+license = "MIT"
 
 [dependencies]
 thiserror = "2.0.16"
