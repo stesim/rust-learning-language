@@ -1,35 +1,36 @@
-use std::{collections::HashMap, fmt};
+use std::{collections::HashMap, fmt, rc::Rc};
 
 use thiserror::Error;
 
-use crate::parsers::no_copy_parser::{BinOp, Expr, Stmt};
+use crate::ast::{Ast, BinOp, Expr, InternId, Interns, Stmt};
 
 #[derive(Debug, Clone)]
-pub enum Value<'a> {
+pub enum Value {
     Unit,
     Number(i64),
     String(String),
-    StaticString(&'a str),
-    Function {
-        params: &'a Vec<&'a str>,
-        body: &'a Stmt<'a>,
-    },
+    Function(Rc<FuncDef>),
 }
 
-impl fmt::Display for Value<'_> {
+#[derive(Debug)]
+pub struct FuncDef {
+    pub params: Vec<InternId>,
+    pub body: Stmt,
+}
+
+impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Value::Unit => write!(f, "()"),
             Value::Number(value) => write!(f, "{value}"),
             Value::String(content) => write!(f, "\"{content}\""),
-            Value::StaticString(content) => write!(f, "\"{content}\""),
-            Value::Function { params, .. } => {
+            Value::Function(def) => {
                 write!(f, "func(")?;
-                for (i, name) in params.iter().enumerate() {
+                for i in 0..def.params.len() {
                     if i == 0 {
-                        write!(f, "{name}")?;
+                        write!(f, "_{i}")?;
                     } else {
-                        write!(f, ", {name}")?;
+                        write!(f, ", _{i}")?;
                     }
                 }
                 write!(f, ")")
@@ -39,25 +40,25 @@ impl fmt::Display for Value<'_> {
 }
 
 #[derive(Error, Debug)]
-pub enum Error {
+pub enum EvalError {
     #[error("Symbol already exists: {0}")]
     SymbolExists(String),
     #[error("Unknown symbol: {0}")]
     UnknownSymbol(String),
     #[error("Unsupported binary operation.")]
     UnsupportedBinaryOp,
-    #[error("Symbol is not a function: {0}")]
-    NotAFunction(String),
+    #[error("Symbol is not a function: {name}")]
+    NotAFunction { name: String },
     #[error("Invalid argument count; expected {0}, got {1}")]
     InvalidArgumentCount(usize, usize),
 }
 
 #[derive(Debug)]
-pub struct EvaluationScope<'a> {
-    symbols: HashMap<&'a str, Value<'a>>,
+pub struct EvaluationScope {
+    symbols: HashMap<InternId, Value>,
 }
 
-impl<'a> EvaluationScope<'a> {
+impl EvaluationScope {
     pub fn new() -> Self {
         Self {
             symbols: HashMap::new(),
@@ -66,40 +67,40 @@ impl<'a> EvaluationScope<'a> {
 }
 
 #[derive(Debug)]
-pub enum ControlFlow<'a> {
-    Default(Value<'a>),
-    Return(Value<'a>),
+pub enum ControlFlow {
+    Default(Value),
+    Return(Value),
 }
 
-pub struct Interpreter<'a> {
-    scopes: Vec<EvaluationScope<'a>>,
+pub struct Interpreter {
+    scopes: Vec<EvaluationScope>,
+    pub interns: Interns,
 }
 
-impl<'a> Interpreter<'a> {
+impl Interpreter {
     pub fn new() -> Self {
         Self {
             scopes: vec![EvaluationScope::new()],
+            interns: Interns::new(),
         }
     }
 
     /// Evaluates the given syntax tree and returns the value of the last statement.
-    pub fn eval<I>(&mut self, statements: I) -> Result<Value<'a>, Error>
-    where
-        I: Iterator<Item = &'a Stmt<'a>>,
-    {
+    pub fn eval(&mut self, ast: &Ast) -> Result<Value, EvalError> {
         let mut value = ControlFlow::Default(Value::Unit);
-        for stmt in statements {
+        for stmt in ast.statements() {
             value = self.eval_stmt(stmt)?;
         }
-        match value {
-            ControlFlow::Default(value) => Ok(value),
-            ControlFlow::Return(value) => Ok(value),
-        }
+        let value = match value {
+            ControlFlow::Default(value) => value,
+            ControlFlow::Return(value) => value,
+        };
+        Ok(value)
     }
 
     /// Evaluates the given statement and returns its value if it is an expression statement or a
     /// unit value otherwise.
-    fn eval_stmt(&mut self, stmt: &'a Stmt<'a>) -> Result<ControlFlow<'a>, Error> {
+    fn eval_stmt(&mut self, stmt: &Stmt) -> Result<ControlFlow, EvalError> {
         match stmt {
             Stmt::Block(sub_statments) => {
                 for sub_stmt in sub_statments {
@@ -116,10 +117,11 @@ impl<'a> Interpreter<'a> {
             Stmt::VarDecl { name, value } => {
                 if !self.has_local_symbol(name) {
                     let value = self.eval_expr(value)?;
-                    self.add_symbol(name, value);
+                    self.add_symbol(*name, value);
                     Ok(ControlFlow::Default(Value::Unit))
                 } else {
-                    Err(Error::SymbolExists(name.to_string()))
+                    let name = self.get_intern_string(name);
+                    Err(EvalError::SymbolExists(name.to_owned()))
                 }
             }
             Stmt::Assign { name, value } => {
@@ -129,11 +131,15 @@ impl<'a> Interpreter<'a> {
             }
             Stmt::FuncDef { name, params, body } => {
                 if !self.has_local_symbol(name) {
-                    let value = Value::Function { params, body };
-                    self.add_symbol(name, value);
+                    let value = Value::Function(Rc::new(FuncDef {
+                        params: params.clone(),
+                        body: *body.clone(),
+                    }));
+                    self.add_symbol(*name, value);
                     Ok(ControlFlow::Default(Value::Unit))
                 } else {
-                    Err(Error::SymbolExists(name.to_string()))
+                    let name = self.get_intern_string(name);
+                    Err(EvalError::SymbolExists(name.to_owned()))
                 }
             }
             Stmt::Return(expr) => {
@@ -146,41 +152,49 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn eval_expr(&mut self, expr: &Expr<'a>) -> Result<Value<'a>, Error> {
+    fn eval_expr(&mut self, expr: &Expr) -> Result<Value, EvalError> {
         match expr {
             Expr::BinaryOp { left, op, right } => self.eval_binary_op(left, op, right),
-            Expr::FunCall(name, args) => self.eval_func(name, args),
+            Expr::FunCall(name, args) => self.eval_func(&name, args),
             Expr::Number(value) => Ok(Value::Number(*value)),
-            Expr::String(content) => Ok(Value::StaticString(content)),
+            Expr::String(content) => {
+                let content = self.get_intern_string(content);
+                Ok(Value::String(content.to_owned()))
+            }
             Expr::Variable(name) => self
                 .get_symbol(name)
                 .cloned()
-                .ok_or_else(|| Error::UnknownSymbol(name.to_string())),
+                .ok_or_else(|| EvalError::UnknownSymbol(self.get_intern_string(name).to_owned())),
         }
     }
 
-    fn eval_func(&mut self, name: &str, args: &Vec<Expr<'a>>) -> Result<Value<'a>, Error> {
+    fn eval_func(&mut self, name: &InternId, args: &Vec<Expr>) -> Result<Value, EvalError> {
         match self.get_symbol(name) {
-            Some(Value::Function { params, body }) => self.eval_user_func(params, args, body),
-            Some(_) => Err(Error::NotAFunction(name.to_string())),
+            Some(Value::Function(def)) => {
+                let def = def.clone();
+                self.eval_user_func(&def.params, args, &def.body)
+            }
+            Some(_) => Err(EvalError::NotAFunction {
+                name: self.get_intern_string(name).to_owned(),
+            }),
             None => self.eval_builtin_func(name, args),
         }
     }
 
     fn eval_user_func(
         &mut self,
-        params: &Vec<&'a str>,
-        args: &Vec<Expr<'a>>,
-        body: &'a Stmt<'a>,
-    ) -> Result<Value<'a>, Error> {
+        params: &Vec<InternId>,
+        args: &Vec<Expr>,
+        body: &Stmt,
+    ) -> Result<Value, EvalError> {
         if args.len() != params.len() {
-            return Err(Error::InvalidArgumentCount(params.len(), args.len()));
+            return Err(EvalError::InvalidArgumentCount(params.len(), args.len()));
         }
 
         let args = self.eval_func_args(args)?;
         self.push_scope();
         for (name, value) in params.iter().zip(args.iter()) {
-            self.add_symbol(name, value.clone());
+            self.add_symbol(*name, value.clone());
         }
 
         let result = match self.eval_stmt(body)? {
@@ -193,23 +207,24 @@ impl<'a> Interpreter<'a> {
         result
     }
 
-    fn eval_builtin_func(&mut self, name: &str, args: &Vec<Expr<'a>>) -> Result<Value<'a>, Error> {
+    fn eval_builtin_func(&mut self, name: &InternId, args: &Vec<Expr>) -> Result<Value, EvalError> {
+        let name = self.get_intern_string(name);
         match name {
             "print" => self.eval_print(args).map(|_| Value::Unit),
-            _ => Err(Error::UnknownSymbol(name.to_owned())),
+            _ => Err(EvalError::UnknownSymbol(name.to_owned())),
         }
     }
 
-    fn eval_func_args(&mut self, args: &Vec<Expr<'a>>) -> Result<Vec<Value<'a>>, Error> {
+    fn eval_func_args(&mut self, args: &Vec<Expr>) -> Result<Vec<Value>, EvalError> {
         args.iter().map(|expr| self.eval_expr(expr)).collect()
     }
 
     fn eval_binary_op(
         &mut self,
-        left: &Expr<'a>,
+        left: &Expr,
         op: &BinOp,
-        right: &Expr<'a>,
-    ) -> Result<Value<'a>, Error> {
+        right: &Expr,
+    ) -> Result<Value, EvalError> {
         let left = self.eval_expr(left)?;
         let right = self.eval_expr(right)?;
 
@@ -226,20 +241,11 @@ impl<'a> Interpreter<'a> {
             (Value::String(lhs), Value::String(rhs)) if op == &BinOp::Add => {
                 Ok(Value::String(format!("{lhs}{rhs}")))
             }
-            (Value::String(lhs), Value::StaticString(rhs)) if op == &BinOp::Add => {
-                Ok(Value::String(format!("{lhs}{rhs}")))
-            }
-            (Value::StaticString(lhs), Value::String(rhs)) if op == &BinOp::Add => {
-                Ok(Value::String(format!("{lhs}{rhs}")))
-            }
-            (Value::StaticString(lhs), Value::StaticString(rhs)) if op == &BinOp::Add => {
-                Ok(Value::String(format!("{lhs}{rhs}")))
-            }
-            _ => Err(Error::UnsupportedBinaryOp),
+            _ => Err(EvalError::UnsupportedBinaryOp),
         }
     }
 
-    fn eval_print(&mut self, args: &Vec<Expr<'a>>) -> Result<(), Error> {
+    fn eval_print(&mut self, args: &Vec<Expr>) -> Result<(), EvalError> {
         for (i, arg) in args.iter().enumerate() {
             let value = self.eval_expr(arg)?;
             if i > 0 {
@@ -247,7 +253,6 @@ impl<'a> Interpreter<'a> {
             }
             match value {
                 Value::String(content) => print!("{content}"),
-                Value::StaticString(content) => print!("{content}"),
                 _ => print!("{value}"),
             }
         }
@@ -255,11 +260,11 @@ impl<'a> Interpreter<'a> {
         Ok(())
     }
 
-    fn has_local_symbol(&self, name: &str) -> bool {
+    fn has_local_symbol(&self, name: &InternId) -> bool {
         self.current_scope().symbols.contains_key(name)
     }
 
-    fn get_symbol(&self, name: &str) -> Option<&Value<'a>> {
+    fn get_symbol(&self, name: &InternId) -> Option<&Value> {
         for scope in self.scopes.iter().rev() {
             if let Some(value) = scope.symbols.get(name) {
                 return Some(value);
@@ -268,18 +273,26 @@ impl<'a> Interpreter<'a> {
         None
     }
 
-    fn add_symbol(&mut self, name: &'a str, value: Value<'a>) {
-        self.current_scope_mut().symbols.insert(name, value);
+    fn add_symbol(&mut self, name: InternId, value: Value) {
+        let previous = self.current_scope_mut().symbols.insert(name, value);
+        if previous.is_some() {
+            panic!("Adding a symbol should not overwrite an existing one");
+        }
     }
 
-    fn assign_symbol(&mut self, name: &str, value: Value<'a>) -> Result<(), Error> {
+    fn assign_symbol(&mut self, name: &InternId, value: Value) -> Result<(), EvalError> {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(stored) = scope.symbols.get_mut(name) {
                 *stored = value;
                 return Ok(());
             }
         }
-        Err(Error::UnknownSymbol(name.to_owned()))
+        let name = self.get_intern_string(name);
+        Err(EvalError::UnknownSymbol(name.to_owned()))
+    }
+
+    fn get_intern_string(&self, id: &InternId) -> &str {
+        self.interns.get(id).expect("InternId should be valid")
     }
 
     fn push_scope(&mut self) {
@@ -290,11 +303,11 @@ impl<'a> Interpreter<'a> {
         self.scopes.pop();
     }
 
-    fn current_scope(&self) -> &EvaluationScope<'a> {
+    fn current_scope(&self) -> &EvaluationScope {
         self.scopes.last().unwrap()
     }
 
-    fn current_scope_mut(&mut self) -> &mut EvaluationScope<'a> {
+    fn current_scope_mut(&mut self) -> &mut EvaluationScope {
         self.scopes.last_mut().unwrap()
     }
 }

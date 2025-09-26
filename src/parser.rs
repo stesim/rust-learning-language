@@ -1,53 +1,13 @@
-use std::num::ParseIntError;
+use std::{collections::HashMap, num::ParseIntError};
 
 use thiserror::Error;
 
-use crate::lexers::no_copy_lexer::{Error as LexError, Position, Span, Token, TokenKind};
-
-#[derive(Debug, Clone)]
-pub enum Stmt<'a> {
-    NoOp,
-    Block(Vec<Stmt<'a>>),
-    VarDecl {
-        name: &'a str,
-        value: Expr<'a>,
-    },
-    Assign {
-        name: &'a str,
-        value: Expr<'a>,
-    },
-    FuncDef {
-        name: &'a str,
-        params: Vec<&'a str>,
-        body: Box<Stmt<'a>>,
-    },
-    Return(Option<Expr<'a>>),
-    Expr(Expr<'a>),
-}
-
-#[derive(Debug, Clone)]
-pub enum Expr<'a> {
-    Number(i64),
-    String(&'a str),
-    Variable(&'a str),
-    FunCall(&'a str, Vec<Expr<'a>>),
-    BinaryOp {
-        left: Box<Expr<'a>>,
-        op: BinOp,
-        right: Box<Expr<'a>>,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum BinOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-}
+use crate::{
+    Ast, BinOp, Expr, InternId, Interns, LexError, Position, Span, Stmt, Token, TokenKind,
+};
 
 #[derive(Debug, Error)]
-pub enum Error {
+pub enum ParseError {
     #[error(transparent)]
     LexError(#[from] LexError),
     #[error("Unexpected end of file.")]
@@ -67,33 +27,75 @@ pub enum Error {
     InvalidNumber { span: Span, source: ParseIntError },
 }
 
-pub fn parse<'a, I>(input: I) -> impl Iterator<Item = Result<Stmt<'a>, Error>>
+pub fn parse<'a, I>(input: I) -> Result<(Ast, Interns), ParseError>
 where
     I: Iterator<Item = Result<Token<'a>, LexError>>,
 {
-    Parser::new(input)
+    Parser::new(input).parse()
 }
 
-pub struct Parser<'a, I>
+pub fn parse_with_interns<'a, I>(input: I, interns: &mut Interns) -> Result<Ast, ParseError>
+where
+    I: Iterator<Item = Result<Token<'a>, LexError>>,
+{
+    Parser::new(input).parse_with_interns(interns)
+}
+
+struct Parser<'a, I>
 where
     I: Iterator<Item = Result<Token<'a>, LexError>>,
 {
     tokens: std::iter::Peekable<I>,
     buffered: Option<Token<'a>>,
+    interns: HashMap<String, InternId>,
 }
 
 impl<'a, I> Parser<'a, I>
 where
     I: Iterator<Item = Result<Token<'a>, LexError>>,
 {
-    pub fn new(tokens: I) -> Self {
+    fn new(tokens: I) -> Self {
         Self {
             tokens: tokens.peekable(),
             buffered: None,
+            interns: HashMap::new(),
         }
     }
 
-    pub fn parse_stmt(&mut self) -> Result<Stmt<'a>, Error> {
+    fn parse(&mut self) -> Result<(Ast, Interns), ParseError> {
+        let mut ast = Ast::new(Vec::new());
+        let mut interns = Interns::new();
+        self.parse_into(&mut ast, &mut interns)?;
+        Ok((ast, interns))
+    }
+
+    fn parse_with_interns(&mut self, interns: &mut Interns) -> Result<Ast, ParseError> {
+        let mut ast = Ast::new(Vec::new());
+        self.parse_into(&mut ast, interns)?;
+        Ok(ast)
+    }
+
+    fn parse_into(&mut self, ast: &mut Ast, interns: &mut Interns) -> Result<(), ParseError> {
+        // move existing interns into inverse map (string -> id)
+        for (i, string) in interns.0.drain(..).enumerate() {
+            self.interns.insert(string, InternId(i));
+        }
+
+        // parse
+        while self.tokens.peek().is_some() || self.buffered.is_some() {
+            let stmt = self.parse_stmt()?;
+            ast.push(stmt);
+        }
+
+        // move all interns into original vec
+        interns.0.resize(self.interns.len(), String::new());
+        for (string, i) in self.interns.drain() {
+            interns.0[i.0] = string;
+        }
+        Ok(())
+    }
+
+    fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
         let next = self.peek()?.kind;
         match next {
             TokenKind::Semicolon => {
@@ -115,7 +117,7 @@ where
         }
     }
 
-    fn parse_block(&mut self) -> Result<Stmt<'a>, Error> {
+    fn parse_block(&mut self) -> Result<Stmt, ParseError> {
         self.expect(TokenKind::LBrace)?;
         let mut statements = Vec::new();
         loop {
@@ -131,7 +133,7 @@ where
         Ok(Stmt::Block(statements))
     }
 
-    fn parse_var_decl(&mut self) -> Result<Stmt<'a>, Error> {
+    fn parse_var_decl(&mut self) -> Result<Stmt, ParseError> {
         self.expect(TokenKind::Let)?;
         let name = self.parse_identifier()?;
         self.expect(TokenKind::Eq)?;
@@ -140,7 +142,7 @@ where
         Ok(Stmt::VarDecl { name, value })
     }
 
-    fn parse_func_def(&mut self) -> Result<Stmt<'a>, Error> {
+    fn parse_func_def(&mut self) -> Result<Stmt, ParseError> {
         self.expect(TokenKind::Func)?;
         let name = self.parse_identifier()?;
         self.expect(TokenKind::LParen)?;
@@ -154,7 +156,7 @@ where
         })
     }
 
-    fn parse_parameter_list(&mut self) -> Result<Vec<&'a str>, Error> {
+    fn parse_parameter_list(&mut self) -> Result<Vec<InternId>, ParseError> {
         let mut params = Vec::new();
         let first = self.peek()?.kind;
         if first != TokenKind::RParen {
@@ -172,7 +174,7 @@ where
         Ok(params)
     }
 
-    fn parse_func_body(&mut self) -> Result<Stmt<'a>, Error> {
+    fn parse_func_body(&mut self) -> Result<Stmt, ParseError> {
         let next = self.peek()?.kind;
         if next == TokenKind::LBrace {
             self.parse_block()
@@ -183,7 +185,7 @@ where
         }
     }
 
-    fn parse_return(&mut self) -> Result<Stmt<'a>, Error> {
+    fn parse_return(&mut self) -> Result<Stmt, ParseError> {
         self.expect(TokenKind::Return)?;
         if self.peek()?.kind == TokenKind::Semicolon {
             Ok(Stmt::Return(None))
@@ -192,7 +194,7 @@ where
         }
     }
 
-    fn parse_assign(&mut self) -> Result<Stmt<'a>, Error> {
+    fn parse_assign(&mut self) -> Result<Stmt, ParseError> {
         let name = self.parse_identifier()?;
         self.expect(TokenKind::Eq)?;
         let value = self.parse_expr()?;
@@ -200,11 +202,11 @@ where
         Ok(Stmt::Assign { name, value })
     }
 
-    fn parse_expr(&mut self) -> Result<Expr<'a>, Error> {
+    fn parse_expr(&mut self) -> Result<Expr, ParseError> {
         return self.parse_additive_expr();
     }
 
-    fn parse_additive_expr(&mut self) -> Result<Expr<'a>, Error> {
+    fn parse_additive_expr(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_multiplicative_expr()?;
         loop {
             let next = self.peek()?;
@@ -228,7 +230,7 @@ where
         Ok(left)
     }
 
-    fn parse_multiplicative_expr(&mut self) -> Result<Expr<'a>, Error> {
+    fn parse_multiplicative_expr(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_factor()?;
         loop {
             let next = self.peek()?;
@@ -252,40 +254,46 @@ where
         Ok(left)
     }
 
-    fn parse_factor(&mut self) -> Result<Expr<'a>, Error> {
+    fn parse_factor(&mut self) -> Result<Expr, ParseError> {
         let token = self.advance()?;
         match token.kind {
             TokenKind::Number => self.parse_number(&token),
-            TokenKind::String => Ok(Expr::String(token.text.unwrap())),
+            TokenKind::String => {
+                let string = token.text.unwrap();
+                let intern = self.get_intern(string);
+                Ok(Expr::String(intern))
+            }
             TokenKind::Ident => {
                 let name = token.text.unwrap();
                 self.parse_identifier_initiated_expr(name)
             }
             TokenKind::LParen => self.parse_paren_expr(),
-            _ => Err(Error::UnexpectedToken {
+            _ => Err(ParseError::UnexpectedToken {
                 token: token.kind,
                 position: token.span.start,
             }),
         }
     }
 
-    fn parse_identifier_initiated_expr(&mut self, string: &'a str) -> Result<Expr<'a>, Error> {
+    fn parse_identifier_initiated_expr(&mut self, string: &'a str) -> Result<Expr, ParseError> {
         let is_function_call = self.peek().is_ok_and(|tok| tok.kind == TokenKind::LParen);
         if is_function_call {
             let args = self.parse_argument_list()?;
-            Ok(Expr::FunCall(string, args))
+            let intern = self.get_intern(string);
+            Ok(Expr::FunCall(intern, args))
         } else {
-            Ok(Expr::Variable(string))
+            let intern = self.get_intern(string);
+            Ok(Expr::Variable(intern))
         }
     }
 
-    fn parse_paren_expr(&mut self) -> Result<Expr<'a>, Error> {
+    fn parse_paren_expr(&mut self) -> Result<Expr, ParseError> {
         let expr = self.parse_expr()?;
         self.expect(TokenKind::RParen)?;
         Ok(expr)
     }
 
-    fn parse_argument_list(&mut self) -> Result<Vec<Expr<'a>>, Error> {
+    fn parse_argument_list(&mut self) -> Result<Vec<Expr>, ParseError> {
         self.expect(TokenKind::LParen)?;
 
         let mut args = Vec::new();
@@ -309,47 +317,60 @@ where
         Ok(args)
     }
 
-    fn parse_number(&mut self, token: &Token<'a>) -> Result<Expr<'a>, Error> {
+    fn parse_number(&mut self, token: &Token<'a>) -> Result<Expr, ParseError> {
         let string = token.text.unwrap();
         match string.parse::<i64>() {
             Ok(val) => Ok(Expr::Number(val)),
-            Err(source) => Err(Error::InvalidNumber {
+            Err(source) => Err(ParseError::InvalidNumber {
                 span: token.span,
                 source,
             }),
         }
     }
 
-    fn parse_identifier(&mut self) -> Result<&'a str, Error> {
+    fn parse_identifier(&mut self) -> Result<InternId, ParseError> {
         let token = self.expect(TokenKind::Ident)?;
-        Ok(token.text.unwrap())
+        let string = token.text.unwrap();
+        let intern = self.get_intern(string);
+        Ok(intern)
     }
 
-    fn peek(&mut self) -> Result<&Token<'a>, Error> {
+    fn get_intern(&mut self, text: &str) -> InternId {
+        match self.interns.get(text) {
+            Some(id) => *id,
+            None => {
+                let next_id = InternId(self.interns.len());
+                self.interns.insert(text.to_owned(), next_id);
+                next_id
+            }
+        }
+    }
+
+    fn peek(&mut self) -> Result<&Token<'a>, ParseError> {
         if let Some(token) = &self.buffered {
             return Ok(token);
         }
 
         match self.tokens.peek() {
             Some(Ok(spanned)) => Ok(spanned),
-            Some(Err(err)) => Err(Error::LexError(err.clone())),
-            None => Err(Error::UnexpectedEndOfFile()),
+            Some(Err(err)) => Err(ParseError::LexError(err.clone())),
+            None => Err(ParseError::UnexpectedEndOfFile()),
         }
     }
 
-    fn peek_next(&mut self) -> Result<&Token<'a>, Error> {
+    fn peek_next(&mut self) -> Result<&Token<'a>, ParseError> {
         if self.buffered.is_none() {
             self.buffered = Some(self.advance()?);
         }
 
         match self.tokens.peek() {
             Some(Ok(spanned)) => Ok(spanned),
-            Some(Err(err)) => Err(Error::LexError(err.clone())),
-            None => Err(Error::UnexpectedEndOfFile()),
+            Some(Err(err)) => Err(ParseError::LexError(err.clone())),
+            None => Err(ParseError::UnexpectedEndOfFile()),
         }
     }
 
-    fn advance(&mut self) -> Result<Token<'a>, Error> {
+    fn advance(&mut self) -> Result<Token<'a>, ParseError> {
         if let Some(token) = self.buffered {
             self.buffered = None;
             return Ok(token);
@@ -357,36 +378,21 @@ where
 
         match self.tokens.next() {
             Some(Ok(spanned)) => Ok(spanned),
-            Some(Err(err)) => Err(Error::LexError(err.clone())),
-            None => Err(Error::UnexpectedEndOfFile()),
+            Some(Err(err)) => Err(ParseError::LexError(err.clone())),
+            None => Err(ParseError::UnexpectedEndOfFile()),
         }
     }
 
-    fn expect(&mut self, expected: TokenKind) -> Result<Token<'a>, Error> {
+    fn expect(&mut self, expected: TokenKind) -> Result<Token<'a>, ParseError> {
         let token = self.advance()?;
         if token.kind == expected {
             Ok(token)
         } else {
-            Err(Error::ExpectedToken {
+            Err(ParseError::ExpectedToken {
                 expected,
                 actual: token.kind,
                 position: token.span.start,
             })
-        }
-    }
-}
-
-impl<'a, I> Iterator for Parser<'a, I>
-where
-    I: Iterator<Item = Result<Token<'a>, LexError>>,
-{
-    type Item = Result<Stmt<'a>, Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.tokens.peek().is_some() {
-            Some(self.parse_stmt())
-        } else {
-            None
         }
     }
 }

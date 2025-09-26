@@ -1,105 +1,9 @@
-use std::fmt;
-
 use thiserror::Error;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TokenKind {
-    Let,
-    Func,
-    Return,
-    Ident,
-    Number,
-    String,
-    Plus,
-    Minus,
-    Star,
-    Slash,
-    Eq,
-    LParen,
-    RParen,
-    Comma,
-    LBrace,
-    RBrace,
-    Semicolon,
-}
-
-impl fmt::Display for TokenKind {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let string = match self {
-            TokenKind::Let => "let",
-            TokenKind::Func => "func",
-            TokenKind::Return => "return",
-            TokenKind::Ident => return write!(f, "<identifier>"),
-            TokenKind::Number => return write!(f, "<number>"),
-            TokenKind::String => return write!(f, "<string>"),
-            TokenKind::Plus => "+",
-            TokenKind::Minus => "-",
-            TokenKind::Star => "*",
-            TokenKind::Slash => "/",
-            TokenKind::Eq => "=",
-            TokenKind::LParen => "(",
-            TokenKind::RParen => ")",
-            TokenKind::Comma => ",",
-            TokenKind::LBrace => "{",
-            TokenKind::RBrace => "}",
-            TokenKind::Semicolon => ";",
-        };
-        write!(f, "'{string}'")
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct Token<'a> {
-    pub kind: TokenKind,
-    pub span: Span,
-    pub text: Option<&'a str>,
-}
-
-impl<'a> Token<'a> {
-    pub fn new(kind: TokenKind, span: Span, text: Option<&'a str>) -> Self {
-        Self { kind, span, text }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct Span {
-    pub start: Position,
-    pub end: Position,
-}
-
-impl Span {
-    fn new(start: Position, end: Position) -> Self {
-        Self { start, end }
-    }
-}
-
-impl fmt::Display for Span {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{} to {}", self.start, self.end)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Spanned<T> {
-    pub node: T,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct Position {
-    pub line: usize,
-    pub column: usize,
-    pub offset: usize,
-}
-
-impl fmt::Display for Position {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "line {}, column {}", self.line, self.column)
-    }
-}
+use crate::{Position, Span, Token, TokenKind};
 
 #[derive(Debug, Error, Clone)]
-pub enum Error {
+pub enum LexError {
     #[error("Expected character '{expected}', got '{got}' at {pos}.")]
     ExpectedCharacter {
         pos: Position,
@@ -112,7 +16,7 @@ pub enum Error {
     UnexpectedEndOfFile { pos: Position },
 }
 
-pub fn lex<'a>(input: &'a str) -> impl Iterator<Item = Result<Token<'a>, Error>> + 'a {
+pub fn lex<'a>(input: &'a str) -> impl Iterator<Item = Result<Token<'a>, LexError>> + 'a {
     Lexer::new(input)
 }
 
@@ -141,21 +45,21 @@ impl<'a> Lexer<'a> {
         self.input[self.position.offset..].chars().next()
     }
 
-    fn expect(&mut self, ch: char) -> Result<(), Error> {
+    fn expect(&mut self, ch: char) -> Result<(), LexError> {
         let pos = self.position;
         match self.advance() {
             Some(actual) => {
                 if actual == ch {
                     Ok(())
                 } else {
-                    Err(Error::ExpectedCharacter {
+                    Err(LexError::ExpectedCharacter {
                         pos,
                         expected: ch,
                         got: actual,
                     })
                 }
             }
-            None => Err(Error::UnexpectedEndOfFile { pos }),
+            None => Err(LexError::UnexpectedEndOfFile { pos }),
         }
     }
 
@@ -202,7 +106,7 @@ impl<'a> Lexer<'a> {
         Span::new(start_pos, end_pos)
     }
 
-    fn lex_token(&mut self) -> Option<Result<Token<'a>, Error>> {
+    fn lex_token(&mut self) -> Option<Result<Token<'a>, LexError>> {
         self.skip_whitespace_and_comments();
 
         let Some(ch) = self.peek() else {
@@ -234,13 +138,13 @@ impl<'a> Lexer<'a> {
         Token::new(kind, span, None)
     }
 
-    fn lex_number(&mut self) -> Result<Token<'a>, Error> {
+    fn lex_number(&mut self) -> Result<Token<'a>, LexError> {
         let span = self.collect_string_while(|ch| ch.is_ascii_digit());
         let string = self.slice_from_span(&span);
         Ok(Token::new(TokenKind::Number, span, Some(string)))
     }
 
-    fn lex_string(&mut self) -> Result<Token<'a>, Error> {
+    fn lex_string(&mut self) -> Result<Token<'a>, LexError> {
         self.expect('"')?;
         let span = self.collect_string_while(|ch| ch != '"');
         self.expect('"')?;
@@ -248,11 +152,11 @@ impl<'a> Lexer<'a> {
         Ok(Token::new(TokenKind::String, span, Some(string)))
     }
 
-    fn lex_special_characters(&mut self) -> Result<Token<'a>, Error> {
+    fn lex_special_characters(&mut self) -> Result<Token<'a>, LexError> {
         let start = self.position;
 
         let Some(ch) = self.advance() else {
-            return Err(Error::UnexpectedEndOfFile { pos: start });
+            return Err(LexError::UnexpectedEndOfFile { pos: start });
         };
 
         let kind = match ch {
@@ -268,7 +172,7 @@ impl<'a> Lexer<'a> {
             '}' => TokenKind::RBrace,
             ';' => TokenKind::Semicolon,
 
-            _ => return Err(Error::UnexpectedCharacter { pos: start, ch }),
+            _ => return Err(LexError::UnexpectedCharacter { pos: start, ch }),
         };
 
         let end = self.position;
@@ -279,7 +183,7 @@ impl<'a> Lexer<'a> {
 }
 
 impl<'a> Iterator for Lexer<'a> {
-    type Item = Result<Token<'a>, Error>;
+    type Item = Result<Token<'a>, LexError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.lex_token()
