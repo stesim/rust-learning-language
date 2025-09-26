@@ -7,6 +7,7 @@ fn main() {
     match &eval_type[..] {
         "simple" => run(simple_eval()),
         "no_copy" => run(no_copy_eval()),
+        "interning" => run(interning_eval()),
         _ => println!("Unknown eval type."),
     };
 }
@@ -78,6 +79,27 @@ fn no_copy_eval() -> impl FnMut(&str) -> Result<Option<String>, String> {
         ));
 
         match interpreter.eval(ast.iter()) {
+            Ok(Value::Unit) => Ok(None),
+            Ok(value) => Ok(Some(value.to_string())),
+            Err(err) => Err(err.to_string()),
+        }
+    };
+}
+
+fn interning_eval() -> impl FnMut(&str) -> Result<Option<String>, String> {
+    use rll::{
+        interpreters::interning_interpreter::{Interpreter, Value},
+        lexers::no_copy_lexer::lex,
+        parsers::interning_parser::parse_with_interns,
+    };
+
+    let mut interpreter = Interpreter::new();
+
+    return move |input: &str| {
+        let tokens = lex(&input);
+        let ast =
+            parse_with_interns(tokens, &mut interpreter.interns).map_err(|e| e.to_string())?;
+        match interpreter.eval(&ast) {
             Ok(Value::Unit) => Ok(None),
             Ok(value) => Ok(Some(value.to_string())),
             Err(err) => Err(err.to_string()),
